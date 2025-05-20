@@ -1,4 +1,4 @@
-# dependencies
+# DEPENDENCIES
 node_modules
 .pnp
 .pnp.*
@@ -8,41 +8,41 @@ node_modules
 !.yarn/releases
 !.yarn/versions
 
-# testing
+# TESTING
 coverage
 
-# next.js
+# NEXT.JS
 .next/
 out/
 
-# production
+# PRODUCTION
 build/
 
-# misc
+# MISC
 .DS_Store
 *.pem
 
-# debug
+# DEBUG
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
 
-# env files
+# ENV FILES
 .env
 .env.local
 
-# vercel
+# VERCEL
 .vercel
 
-# typescript
+# TYPESCRIPT
 *.tsbuildinfo
 next-env.d.ts
 
-# Doc Modules
+# DOC MODULES
 _doc_modules
 
-# Python generated files
+# PYTHON GENERATED FILES
 __pycache__/
 *.py[cod]
 *$py.class
@@ -63,14 +63,14 @@ var/
 .installed.cfg
 *.egg
 
-# Ruff cache
+# RUFF CACHE
 .ruff_cache/
 
-# IDE files
+# IDE FILES
 .idea/
 .vscode/
 *.swp
 *.swo
 
-# Logs
+# LOGS
 *.log
