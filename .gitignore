@@ -63,6 +63,9 @@ var/
 .installed.cfg
 *.egg
 
+# Ruff cache
+.ruff_cache/
+
 # IDE files
 .idea/
 .vscode/

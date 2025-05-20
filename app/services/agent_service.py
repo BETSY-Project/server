@@ -1,18 +1,8 @@
-#!/usr/bin/env python3
 import asyncio
-import os
 import types
-import logging
-from datetime import datetime
-from typing import Optional, Dict
-from pathlib import Path
+from typing import Optional
 
-import uvicorn
-from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
-
-from dotenv import load_dotenv
+# Imports from the original api.py that BetsyTeacher uses
 from livekit.agents import (
     Agent,
     AgentSession,
@@ -21,48 +11,11 @@ from livekit.agents import (
     WorkerOptions,
     JobExecutorType,
     stt,
-    vad,
 )
-from livekit.protocol.room import DeleteRoomRequest
 from livekit.plugins import openai, silero
-from livekit import api as livekit_api
 
-# Configure logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
-
-def load_environment_variables():
-
-    env_file = Path('.env.local')
-    if env_file.exists():
-        logger.info(f"Loading environment from {env_file.absolute()}")
-        load_dotenv(env_file)
-    else:
-        logger.info("No .env.local found, trying .env")
-        load_dotenv()
-
-    logger.info("Checking required environment variables:")
-    missing_vars = []
-    for var_name in required_vars:
-        value = os.getenv(var_name)
-        if value:
-            masked_value = value[:3] + '***' if len(value) > 3 else '***'
-            logger.info(f"  {var_name}: {masked_value} (SET)")
-        else:
-            logger.warning(f"  {var_name}: NOT SET")
-            missing_vars.append(var_name)
-
-    if missing_vars:
-        raise EnvironmentError(f"Missing required environment variables: {', '.join(missing_vars)}")
-
-required_vars = (
-    "LIVEKIT_API_KEY",
-    "LIVEKIT_API_SECRET",
-    "LIVEKIT_URL",
-    "OPENAI_API_KEY"
-)
-
-load_environment_variables()
+# New imports for config and logging
+from app.config import logger, settings
 
 class BetsyTeacher:
     def __init__(self):
@@ -76,34 +29,25 @@ class BetsyTeacher:
         session = None
         session_task = None
         try:
-            logger.info(f"Agent Worker (Thread): Initializing for room '{self.room_name}' with instructions: '{self.agent_instructions[:50]}...'")
+            logger.info(f"Agent Worker (Thread): Initializing for room '{self.room_name}' with instructions: '{self.agent_instructions[:50] if self.agent_instructions else 'N/A'}...'")
             
             logger.info(f"Agent Worker (Thread): Initializing LiveKit components for room '{self.room_name}'")
             
             agent = Agent(instructions=self.agent_instructions)
             
-            # Attempt to initialize Silero VAD
             vad_instance = None
             try:
-                # Create an object for opts with a sample_rate attribute
                 vad_opts_obj = types.SimpleNamespace(sample_rate=16000)
                 vad_instance = silero.VAD(session=ctx.room, opts=vad_opts_obj)
                 logger.info(f"Agent Worker (Thread): Silero VAD instantiated with ctx.room and opts: {vad_opts_obj}")
             except Exception as e_vad:
                 logger.error(f"Agent Worker (Thread): Failed to instantiate silero.VAD: {e_vad}", exc_info=True)
-                # If VAD fails, we can't use StreamAdapter, which will likely lead to STT issues.
-                # For now, we'll let it proceed and see if AgentSession handles a None VAD gracefully
-                # or if STT without StreamAdapter (and thus without VAD) works differently.
-                # This is primarily to get past the StreamAdapter(vad=...) requirement if VAD init fails.
 
             openai_stt = openai.STT()
             if vad_instance:
                 adapted_stt = stt.StreamAdapter(stt=openai_stt, vad=vad_instance)
                 logger.info("Agent Worker (Thread): OpenAI STT wrapped with StreamAdapter using Silero VAD.")
             else:
-                # Fallback: If VAD instantiation failed, pass STT directly.
-                # This will likely re-trigger the "STT does not support streaming without VAD" error,
-                # but it allows us to test VAD initialization separately.
                 adapted_stt = openai_stt
                 logger.warning("Agent Worker (Thread): Silero VAD instantiation failed. Passing raw OpenAI STT to AgentSession. Expecting STT streaming error.")
 
@@ -111,7 +55,7 @@ class BetsyTeacher:
                 stt=adapted_stt,
                 llm=openai.LLM(model="gpt-4o"),
                 tts=openai.TTS(voice="alloy"),
-                vad=vad_instance, # Pass the VAD instance to AgentSession as well, if available
+                vad=vad_instance,
             )
             logger.info(f"Agent Worker (Thread): AgentSession instantiated (VAD {'provided' if vad_instance else 'not provided'}).")
 
@@ -126,9 +70,9 @@ class BetsyTeacher:
             
             if ctx.room.isconnected and hasattr(session, '_started') and session._started:
                 try:
-                    logger.info(f"Agent Worker (Thread): Attempting to say a welcome message.")
+                    logger.info("Agent Worker (Thread): Attempting to say a welcome message.")
                     await session.generate_reply(instructions="Dis bonjour et présente-toi brièvement.")
-                    logger.info(f"Agent Worker (Thread): Welcome message task created/finished.")
+                    logger.info("Agent Worker (Thread): Welcome message task created/finished.")
                 except RuntimeError as e_runtime: 
                     logger.error(f"Agent Worker (Thread): RuntimeError trying to say welcome message (session started: {session._started}): {e_runtime}", exc_info=True)
                 except Exception as e_say:
@@ -136,7 +80,7 @@ class BetsyTeacher:
             elif hasattr(session, '_started') and not session._started :
                  logger.warning(f"Agent Worker (Thread): Session not in a 'started' state (session._started = {session._started}), cannot say welcome message.")
             elif not ctx.room.isconnected:
-                 logger.warning(f"Agent Worker (Thread): Room disconnected, cannot say welcome message.")
+                 logger.warning("Agent Worker (Thread): Room disconnected, cannot say welcome message.")
 
             logger.info(f"Agent Worker (Thread): Entering keep-alive loop for room {self.room_name}.")
             while ctx.room.isconnected:
@@ -196,17 +140,19 @@ class BetsyTeacher:
         self.room_name = room_name
         
         try:
-            region = os.getenv("LIVEKIT_REGION")
+            # Use settings object instead of os.getenv
+            region = settings.LIVEKIT_REGION
             
-            lk_url = os.getenv("LIVEKIT_URL")
-            lk_api_key = os.getenv("LIVEKIT_API_KEY")
-            lk_api_secret = os.getenv("LIVEKIT_API_SECRET")
+            lk_url = settings.LIVEKIT_URL
+            lk_api_key = settings.LIVEKIT_API_KEY
+            lk_api_secret = settings.LIVEKIT_API_SECRET
 
             if not all([lk_url, lk_api_key, lk_api_secret]):
-                logger.error("BetsyTeacher: LIVEKIT_URL, API_KEY, or API_SECRET not found. Worker will fail.")
+                # This check might be redundant if Pydantic settings are correctly configured as required
+                logger.error("BetsyTeacher: LIVEKIT_URL, API_KEY, or API_SECRET not found in settings. Worker will fail.")
                 return False
 
-            logger.info(f"BetsyTeacher: Preparing LiveKit Worker (Thread) for room: {self.room_name} (region: {region or 'default'}) using URL: {lk_url[:20]}...")
+            logger.info(f"BetsyTeacher: Preparing LiveKit Worker (Thread) for room: {self.room_name} (region: {region or 'default'}) using URL: {lk_url[:20] if lk_url else 'N/A'}...")
             
             options = WorkerOptions(
                 entrypoint_fnc=self._agent_entrypoint_method,
@@ -273,133 +219,3 @@ class BetsyTeacher:
             logger.info(f"BetsyTeacher: No active worker (Thread) task found for room {current_room_for_log} or task already done.")
         
         logger.info(f"BetsyTeacher: Stop process completed for room {current_room_for_log}.")
-
-app = FastAPI(
-    title="BETSY Agent API",
-    description="API for the BETSY language teacher agent",
-    version="1.0.0",
-)
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"], 
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-teacher = BetsyTeacher()
-class StartSessionRequest(BaseModel):
-    instructions: str = Field(..., description="System prompt instructions for the language teacher")
-    room_name: str = Field(..., description="LiveKit room name to join")
-
-class SessionResponse(BaseModel):
-    success: bool
-    message: str
-    session_id: Optional[str] = None
-    room_name: Optional[str] = None
-
-@app.post("/api/start-session", response_model=SessionResponse)
-async def start_session_endpoint(request: StartSessionRequest):
-    try:
-        logger.info(f"Starting session with instructions: {request.instructions[:50]}... (truncated)")
-        logger.info(f"Agent will join room: {request.room_name}")
-        
-        if teacher.active and teacher.room_name == request.room_name:
-            logger.warning(f"Agent already active in room {request.room_name}. Re-initializing and reconnecting.")
-            await teacher.stop() 
-        elif teacher.active and teacher.room_name != request.room_name:
-            logger.info(f"Agent active in a different room ({teacher.room_name}). Stopping it before connecting to {request.room_name}.")
-            await teacher.stop()
-
-        await teacher.initialize_session(request.instructions)
-        
-        logger.info(f"Attempting to connect teacher to room: {request.room_name}")
-        connection_successful = await teacher.connect_to_room(request.room_name)
-        
-        if not connection_successful:
-            error_msg = f"Failed to connect to LiveKit room: {request.room_name}"
-            logger.error(error_msg)
-            raise HTTPException(status_code=500, detail=error_msg)
-        
-        logger.info(f"Successfully joined room: {request.room_name}")
-        
-        return SessionResponse(
-            success=True,
-            message=f"Session started successfully in room {request.room_name}",
-            session_id="global", 
-            room_name=request.room_name
-        )
-    except Exception as e:
-        error_msg = f"Error starting session: {e}"
-        logger.error(error_msg, exc_info=True)
-        if isinstance(e, HTTPException):
-            raise
-        return SessionResponse(
-            success=False,
-            message=error_msg
-        )
-
-@app.post("/api/stop-session", response_model=SessionResponse)
-async def stop_session_endpoint(): 
-    try:
-        if not teacher.active:
-            logger.warning("No active session found to stop")
-            return SessionResponse(
-                success=False,
-                message="No active session found"
-            )
-        
-        current_room_name = teacher.room_name 
-        logger.info(f"Stopping session. Current room: {current_room_name}")
-        
-        await teacher.stop() 
-        logger.info(f"Teacher stop process initiated for room: {current_room_name}.")
-
-        if current_room_name: 
-            try:
-                livekit_url = os.getenv("LIVEKIT_URL")
-                livekit_api_key = os.getenv("LIVEKIT_API_KEY")
-                livekit_api_secret = os.getenv("LIVEKIT_API_SECRET")
-
-                if not all([livekit_url, livekit_api_key, livekit_api_secret]):
-                    logger.error("LIVEKIT_URL, LIVEKIT_API_KEY, or LIVEKIT_API_SECRET not configured. Cannot delete room.")
-                else:
-                    lk_api_client = livekit_api.LiveKitAPI(livekit_url, livekit_api_key, livekit_api_secret)
-                    logger.info(f"Attempting to delete room: {current_room_name} from LiveKit server.")
-                    delete_req = DeleteRoomRequest(room=current_room_name)
-                    await lk_api_client.room.delete_room(delete_req)
-                    logger.info(f"Successfully deleted room: {current_room_name} from LiveKit server.")
-                    await lk_api_client.aclose()
-            except Exception as delete_e:
-                logger.error(f"Error deleting room {current_room_name} from LiveKit server: {delete_e}", exc_info=True)
-        
-        teacher.room_name = None
-
-        return SessionResponse(
-            success=True,
-            message=f"Session stopped successfully (room: {current_room_name}). Room deletion attempted.",
-            room_name=current_room_name 
-        )
-    except Exception as e:
-        error_msg = f"Error stopping session: {e}"
-        logger.error(error_msg, exc_info=True)
-        return SessionResponse(
-            success=False,
-            message=error_msg
-        )
-
-@app.get("/api/status")
-async def get_status():
-    return {
-        "active": teacher.active,
-        "room_name": teacher.room_name,
-        "timestamp": datetime.now().isoformat()
-    }
-
-@app.get("/health")
-async def health_check():
-    return {"status": "ok", "timestamp": datetime.now().isoformat()}
-
-if __name__ == "__main__":
-    uvicorn.run("api:app", host=os.getenv("HOST", "0.0.0.0"), port=int(os.getenv("PORT", "8000")), reload=True)

@@ -1,0 +1,3 @@
+# TODO: implement LiveKit JWT generation
+def create_token(identity: str, room_name: str, ttl_seconds: int = 3600) -> str:
+    ...

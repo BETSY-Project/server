@@ -8,4 +8,4 @@ fi
 
 # Start the FastAPI server
 echo "Starting BETSY agent server..."
-python api.py
+python main.py
