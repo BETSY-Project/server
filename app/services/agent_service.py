@@ -43,7 +43,7 @@ class BetsyTeacher:
             except Exception as e_vad:
                 logger.error(f"Agent Worker (Thread): Failed to instantiate silero.VAD: {e_vad}", exc_info=True)
 
-            openai_stt = openai.STT()
+            openai_stt = openai.STT(api_key=settings.OPENAI_API_KEY)
             if vad_instance:
                 adapted_stt = stt.StreamAdapter(stt=openai_stt, vad=vad_instance)
                 logger.info("Agent Worker (Thread): OpenAI STT wrapped with StreamAdapter using Silero VAD.")
@@ -53,8 +53,8 @@ class BetsyTeacher:
 
             session = AgentSession(
                 stt=adapted_stt,
-                llm=openai.LLM(model="gpt-4o"),
-                tts=openai.TTS(voice="alloy"),
+                llm=openai.LLM(model="gpt-4o", api_key=settings.OPENAI_API_KEY),
+                tts=openai.TTS(voice="alloy", api_key=settings.OPENAI_API_KEY),
                 vad=vad_instance,
             )
             logger.info(f"Agent Worker (Thread): AgentSession instantiated (VAD {'provided' if vad_instance else 'not provided'}).")
