@@ -23,6 +23,7 @@ class Settings(BaseSettings):
     LIVEKIT_ROOM_PREFIX: str = "betsy-classroom" # Default room prefix
     PORT: int = 8000
     HOST: str = "0.0.0.0"
+    CLM_URL: str = "http://localhost:9999" # URL for the Custom Log Manager service
 
     model_config = SettingsConfigDict(
         env_file_encoding='utf-8',
