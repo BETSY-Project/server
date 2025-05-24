@@ -11,11 +11,17 @@ from livekit import api as livekit_api # For stop_session_endpoint
 # New imports for services and config
 from app.services.agent_service import BetsyTeacher
 from app.services.token_service import create_token as create_livekit_token # Import the token service
-from app.config import logger, settings # logger and settings from our new config module
+from app.config import logger as app_config_logger, settings
+from app.logger import ServerLogger # Import our custom logger class
+
+# Ensure the logger instance is treated as ServerLogger for type hinting
+assert isinstance(app_config_logger, ServerLogger), \
+    f"Logger from app.config is not a ServerLogger instance, type: {type(app_config_logger)}"
+logger: ServerLogger = app_config_logger
 
 app = FastAPI(
-    title="BETSY Agent API",
-    description="API for the BETSY language teacher agent",
+    title="BETSY Server",
+    description="API for the BETSY teacher agent",
     version="1.0.0",
 )
 
@@ -31,7 +37,7 @@ teacher = BetsyTeacher() # Instantiate the teacher from agent_service
 
 # Pydantic models (kept here for now as per instructions)
 class StartSessionRequest(BaseModel):
-    instructions: str = Field(..., description="System prompt instructions for the language teacher")
+    instructions: str = Field(..., description="System prompt instructions for the teacher")
     room_name: str = Field(..., description="LiveKit room name to join")
 
 class SessionResponse(BaseModel):
@@ -88,7 +94,7 @@ async def start_session_endpoint(request: StartSessionRequest):
             logger.error(error_msg)
             raise HTTPException(status_code=500, detail=error_msg)
         
-        logger.info(f"Successfully joined room: {request.room_name}")
+        logger.success(f"Successfully joined room: {request.room_name}")
         
         return SessionResponse(
             success=True,
@@ -136,7 +142,7 @@ async def stop_session_endpoint():
                     logger.info(f"Attempting to delete room: {current_room_name} from LiveKit server.")
                     delete_req = DeleteRoomRequest(room=current_room_name)
                     await lk_api_client.room.delete_room(delete_req)
-                    logger.info(f"Successfully deleted room: {current_room_name} from LiveKit server.")
+                    logger.success(f"Successfully deleted room: {current_room_name} from LiveKit server.")
                     await lk_api_client.aclose()
             except Exception as delete_e:
                 logger.error(f"Error deleting room {current_room_name} from LiveKit server: {delete_e}", exc_info=True)

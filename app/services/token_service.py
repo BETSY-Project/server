@@ -7,7 +7,13 @@ from datetime import timedelta
 from typing import Optional, Dict, Any
 
 from livekit import api
-from app.config import settings, logger
+from app.config import settings, logger as app_config_logger
+from app.logger import ServerLogger # Import our custom logger class
+
+# Ensure the logger instance is treated as ServerLogger for type hinting
+assert isinstance(app_config_logger, ServerLogger), \
+    f"Logger from app.config is not a ServerLogger instance, type: {type(app_config_logger)}"
+logger: ServerLogger = app_config_logger
 
 def _generate_random_string(length: int = 12) -> str:
     """Generates a random alphanumeric string."""
@@ -66,10 +72,10 @@ def create_token(
         raise ValueError("LiveKit API key, secret, or URL is not configured.")
 
     identity = uuid.uuid4().hex
-    logger.info(f"Generated identity: {identity}")
+    logger.success(f"Generated identity: {identity}")
 
     room_name = generate_room_name()
-    logger.info(f"Generated room name: {room_name} for identity: {identity}")
+    logger.success(f"Generated room name: {room_name} for identity: {identity}")
 
     video_grants = api.VideoGrants(
         room_join=True,

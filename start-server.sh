@@ -14,5 +14,5 @@ else
 fi
 
 # Start the FastAPI server
-echo "Starting BETSY agent server from $SCRIPT_DIR..."
+echo "Starting the server from $SCRIPT_DIR..."
 python main.py

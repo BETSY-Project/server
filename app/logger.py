@@ -4,14 +4,35 @@ import json
 import os
 import traceback
 
+# Define custom SUCCESS log level
+SUCCESS_LEVEL = 25  # Between INFO (20) and WARNING (30)
+logging.addLevelName(SUCCESS_LEVEL, "SUCCESS")
+
 # Mapping Python log levels to CLM string levels
 LOG_LEVEL_MAP = {
-    logging.DEBUG: "info", # Or "debug" if CLM supports it
+    logging.DEBUG: "debug",
     logging.INFO: "info",
+    SUCCESS_LEVEL: "success", # Custom success level
     logging.WARNING: "warning",
     logging.ERROR: "error",
-    logging.CRITICAL: "error", # Or "critical"
+    logging.CRITICAL: "error",
 }
+
+# 1. Define our custom logger class
+class ServerLogger(logging.Logger):
+    def __init__(self, name, level=logging.NOTSET):
+        super().__init__(name, level)
+
+    def success(self, message, *args, **kwargs):
+        if self.isEnabledFor(SUCCESS_LEVEL):
+            # The _log method is the standard way to issue messages from custom methods
+            self._log(SUCCESS_LEVEL, message, args, **kwargs)
+
+# 2. Tell the logging system to use our custom logger class
+# This must be done BEFORE any loggers are instantiated via getLogger()
+# It's crucial this line is executed early in the module's import lifecycle.
+logging.setLoggerClass(ServerLogger)
+
 
 class CustomLogManagerHandler(logging.Handler):
     """
@@ -37,24 +58,38 @@ class CustomLogManagerHandler(logging.Handler):
             return
 
         log_level_str = LOG_LEVEL_MAP.get(record.levelno, "info") # Default to "info"
-        message_str = self.format(record)
+        
+        # Get the raw message, not the fully formatted one for CLM
+        actual_message = record.getMessage()
+        
+        details_payload = None
+        if record.exc_info:
+            if details_payload is None:
+                details_payload = {}
+            details_payload["exception"] = "".join(traceback.format_exception(*record.exc_info))
+        
+        # For console fallback in case of CLM failure, we might still want the formatted message.
+        # The self.format(record) applies the formatter associated with this handler.
+        formatted_for_console_fallback = self.format(record)
 
         try:
             log_entry = {
                 "service": self.service_name,
                 "level": log_level_str,
-                "message": message_str,
+                "message": actual_message,
             }
-            if record.exc_info:
-                log_entry["details"] = "".join(traceback.format_exception(*record.exc_info))
+            if details_payload is not None: # Only add 'details' field if there's something to include
+                log_entry["details"] = details_payload
             
             requests.post(self.clm_endpoint, json=log_entry, timeout=2)
         except requests.exceptions.RequestException as e:
+            # Fallback to console with the originally intended formatted message
             print(f"Failed to send log to CLM for service '{self.service_name}': {e}")
-            print(f"Original log ({self.service_name} - {log_level_str}): {message_str}")
+            print(f"Original log ({self.service_name} - {log_level_str} - from {record.name}): {formatted_for_console_fallback}")
         except Exception as e:
+            # Fallback to console
             print(f"Unexpected error in CustomLogManagerHandler.emit for service '{self.service_name}': {e}")
-            print(f"Original log ({self.service_name} - {log_level_str}): {message_str}")
+            print(f"Original log ({self.service_name} - {log_level_str} - from {record.name}): {formatted_for_console_fallback}")
 
 
 def get_server_logger(name: str = 'betsy-server',
@@ -81,9 +116,9 @@ def get_server_logger(name: str = 'betsy-server',
     are also logged to console by the CLM handler itself.
     """
     logger = logging.getLogger(name)
-    
+
     if not logger.handlers: # Avoid re-adding handlers
-        logger.setLevel(level)
+        logger.setLevel(level) # Set the overall minimum level for the logger
         formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
         if resolved_clm_endpoint:

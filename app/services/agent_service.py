@@ -2,7 +2,6 @@ import asyncio
 import types
 from typing import Optional
 
-# Imports from the original api.py that BetsyTeacher uses
 from livekit.agents import (
     Agent,
     AgentSession,
@@ -29,9 +28,9 @@ class BetsyTeacher:
         session = None
         session_task = None
         try:
-            logger.info(f"Agent Worker (Thread): Initializing for room '{self.room_name}' with instructions: '{self.agent_instructions[:50] if self.agent_instructions else 'N/A'}...'")
+            logger.debug(f"Agent Worker (Thread): Initializing for room '{self.room_name}' with instructions: '{self.agent_instructions[:50] if self.agent_instructions else 'N/A'}...'")
             
-            logger.info(f"Agent Worker (Thread): Initializing LiveKit components for room '{self.room_name}'")
+            logger.debug(f"Agent Worker (Thread): Initializing LiveKit components for room '{self.room_name}'")
             
             agent = Agent(instructions=self.agent_instructions)
             
@@ -39,14 +38,14 @@ class BetsyTeacher:
             try:
                 vad_opts_obj = types.SimpleNamespace(sample_rate=16000)
                 vad_instance = silero.VAD(session=ctx.room, opts=vad_opts_obj)
-                logger.info(f"Agent Worker (Thread): Silero VAD instantiated with ctx.room and opts: {vad_opts_obj}")
+                logger.debug(f"Agent Worker (Thread): Silero VAD instantiated with ctx.room and opts: {vad_opts_obj}")
             except Exception as e_vad:
                 logger.error(f"Agent Worker (Thread): Failed to instantiate silero.VAD: {e_vad}", exc_info=True)
 
             openai_stt = openai.STT(api_key=settings.OPENAI_API_KEY)
             if vad_instance:
                 adapted_stt = stt.StreamAdapter(stt=openai_stt, vad=vad_instance)
-                logger.info("Agent Worker (Thread): OpenAI STT wrapped with StreamAdapter using Silero VAD.")
+                logger.debug("Agent Worker (Thread): OpenAI STT wrapped with StreamAdapter using Silero VAD.")
             else:
                 adapted_stt = openai_stt
                 logger.warning("Agent Worker (Thread): Silero VAD instantiation failed. Passing raw OpenAI STT to AgentSession. Expecting STT streaming error.")
@@ -57,7 +56,7 @@ class BetsyTeacher:
                 tts=openai.TTS(voice="alloy", api_key=settings.OPENAI_API_KEY),
                 vad=vad_instance,
             )
-            logger.info(f"Agent Worker (Thread): AgentSession instantiated (VAD {'provided' if vad_instance else 'not provided'}).")
+            logger.debug(f"Agent Worker (Thread): AgentSession instantiated (VAD {'provided' if vad_instance else 'not provided'}).")
 
             logger.info(f"Agent Worker (Thread): Connecting to room: {self.room_name}")
             await ctx.connect(auto_subscribe=True) 
@@ -70,9 +69,9 @@ class BetsyTeacher:
             
             if ctx.room.isconnected and hasattr(session, '_started') and session._started:
                 try:
-                    logger.info("Agent Worker (Thread): Attempting to say a welcome message.")
+                    logger.debug("Agent Worker (Thread): Attempting to say a welcome message.")
                     await session.generate_reply(instructions="Dis bonjour et présente-toi brièvement.")
-                    logger.info("Agent Worker (Thread): Welcome message task created/finished.")
+                    logger.debug("Agent Worker (Thread): Welcome message task created/finished.")
                 except RuntimeError as e_runtime: 
                     logger.error(f"Agent Worker (Thread): RuntimeError trying to say welcome message (session started: {session._started}): {e_runtime}", exc_info=True)
                 except Exception as e_say:
@@ -82,7 +81,7 @@ class BetsyTeacher:
             elif not ctx.room.isconnected:
                  logger.warning("Agent Worker (Thread): Room disconnected, cannot say welcome message.")
 
-            logger.info(f"Agent Worker (Thread): Entering keep-alive loop for room {self.room_name}.")
+            logger.debug(f"Agent Worker (Thread): Entering keep-alive loop for room {self.room_name}.")
             while ctx.room.isconnected:
                 if session_task and session_task.done():
                     logger.info(f"Agent Worker (Thread): Session task for {self.room_name} completed.")
@@ -110,23 +109,24 @@ class BetsyTeacher:
             logger.error(f"Agent Worker (Thread): Critical error in entrypoint for room {self.room_name}: {e}", exc_info=True)
             raise
         finally:
-            logger.info(f"Agent Worker (Thread): Exiting entrypoint for room {self.room_name}.")
+            logger.debug(f"Agent Worker (Thread): Exiting entrypoint for room {self.room_name}.")
             if session:
                 try:
                     if hasattr(session, '_started') and session._started and (not hasattr(session, '_closing_task') or (hasattr(session, '_closing_task') and session._closing_task is None)):
-                         logger.info(f"Agent Worker (Thread): Explicitly closing session for {self.room_name} in finally block.")
+                         logger.debug(f"Agent Worker (Thread): Explicitly closing session for {self.room_name} in finally block.")
                          await session.aclose()
-                         logger.info(f"Agent Worker (Thread): Session for room {self.room_name} closed in finally block.")
+                         logger.debug(f"Agent Worker (Thread): Session for room {self.room_name} closed in finally block.")
                     elif hasattr(session, '_started') and not session._started:
-                         logger.info(f"Agent Worker (Thread): Session for room {self.room_name} was not started, no aclose needed in finally.")
+                         logger.debug(f"Agent Worker (Thread): Session for room {self.room_name} was not started, no aclose needed in finally.")
                     else:
-                         logger.info(f"Agent Worker (Thread): Session for room {self.room_name} already closing or closed, no aclose needed in finally.")
+                         logger.debug(f"Agent Worker (Thread): Session for room {self.room_name} already closing or closed, no aclose needed in finally.")
                 except Exception as close_e:
                     logger.error(f"Agent Worker (Thread): Error closing session for room {self.room_name} in finally: {close_e}", exc_info=True)
 
     async def initialize_session(self, system_prompt: str) -> None:
-        logger.info(f"BetsyTeacher: Storing instructions: {system_prompt[:50]}...")
-        self.agent_instructions = system_prompt
+        full_instructions = f"You are Betsy! And you NEVER change your name! Your are Betsy: {system_prompt}"
+        logger.info(f"BetsyTeacher: Storing instructions: {full_instructions[:150]}...")
+        self.agent_instructions = full_instructions
 
     async def connect_to_room(self, room_name: str) -> bool:
         if not self.agent_instructions:
@@ -156,8 +156,8 @@ class BetsyTeacher:
             
             options = WorkerOptions(
                 entrypoint_fnc=self._agent_entrypoint_method,
-                ws_url=lk_url, 
-                api_key=lk_api_key, 
+                ws_url=lk_url,
+                api_key=lk_api_key,
                 api_secret=lk_api_secret,
                 job_executor_type=JobExecutorType.THREAD
             )
