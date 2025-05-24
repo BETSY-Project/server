@@ -10,6 +10,7 @@ from livekit import api as livekit_api # For stop_session_endpoint
 
 # New imports for services and config
 from app.services.agent_service import BetsyTeacher
+from app.services.token_service import create_token as create_livekit_token # Import the token service
 from app.config import logger, settings # logger and settings from our new config module
 
 app = FastAPI(
@@ -38,6 +39,31 @@ class SessionResponse(BaseModel):
     message: str
     session_id: Optional[str] = None
     room_name: Optional[str] = None
+
+# Pydantic model for the new token endpoint response
+class LiveKitTokenResponse(BaseModel):
+    token: str
+    livekit_url: str
+    room_name: str
+    identity: str
+    region: Optional[str] = None
+
+@app.post("/api/livekit-token", response_model=LiveKitTokenResponse)
+async def livekit_token_endpoint(region: Optional[str] = None):
+    """
+    Generates a LiveKit token, a unique room name, and a unique identity.
+    """
+    try:
+        logger.info(f"Requesting LiveKit token, region: {region}")
+        token_data = create_livekit_token(region=region)
+        logger.info(f"Token generated for room: {token_data['room_name']}, identity: {token_data['identity']}")
+        return LiveKitTokenResponse(**token_data)
+    except ValueError as ve:
+        logger.error(f"ValueError generating LiveKit token: {ve}", exc_info=True)
+        raise HTTPException(status_code=400, detail=str(ve))
+    except Exception as e:
+        logger.error(f"Unexpected error generating LiveKit token: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to generate LiveKit token")
 
 @app.post("/api/start-session", response_model=SessionResponse)
 async def start_session_endpoint(request: StartSessionRequest):

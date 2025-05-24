@@ -20,6 +20,7 @@ class Settings(BaseSettings):
     LIVEKIT_URL: str
     OPENAI_API_KEY: str
     LIVEKIT_REGION: Optional[str] = None
+    LIVEKIT_ROOM_PREFIX: str = "betsy-classroom" # Default room prefix
     PORT: int = 8000
     HOST: str = "0.0.0.0"
 
