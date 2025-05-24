@@ -1,17 +1,19 @@
-import logging
+import logging # Keep for type hints if get_server_logger returns logging.Logger
 import os
 from pathlib import Path
 from typing import Optional
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-# 1. Configure logging
-# Using a hierarchical logger name is good practice.
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-)
-logger = logging.getLogger("app.config") # Logger for this config module
+# 1. Initial, basic logger for setup phase (before settings.CLM_URL is known)
+_setup_logger = logging.getLogger("app.config.setup")
+_setup_logger.setLevel(logging.INFO)
+_console_handler = logging.StreamHandler()
+_console_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+_setup_logger.addHandler(_console_handler)
+_setup_logger.propagate = False
+
+logger = _setup_logger # Use this for initial logging
 
 # 2. Define Pydantic Settings class
 class Settings(BaseSettings):
@@ -43,16 +45,16 @@ _current_working_dir = Path(os.getcwd()) # This will be server/ if main.py is ru
 _env_local_path = _current_working_dir / ".env.local"
 _env_path = _current_working_dir / ".env"
 
-logger.info(f"Attempting to load .env files from CWD: {_current_working_dir}")
+_setup_logger.info(f"Attempting to load .env files from CWD: {_current_working_dir}")
 
 if _env_local_path.exists():
     _env_file_to_load = _env_local_path
-    logger.info(f"Found .env.local, preparing to load: {_env_local_path.resolve()}")
+    _setup_logger.info(f"Found .env.local, preparing to load: {_env_local_path.resolve()}")
 elif _env_path.exists():
     _env_file_to_load = _env_path
-    logger.info(f"Found .env, preparing to load: {_env_path.resolve()}")
+    _setup_logger.info(f"Found .env, preparing to load: {_env_path.resolve()}")
 else:
-    logger.info("No .env.local or .env file found in CWD. Will load from environment variables or defaults.")
+    _setup_logger.info("No .env.local or .env file found in CWD. Will load from environment variables or defaults.")
 
 # Instantiate settings. Pydantic will raise ValidationError if required fields are missing.
 if _env_file_to_load:
@@ -60,7 +62,14 @@ if _env_file_to_load:
 else:
     settings = Settings()
 
+# --- Reconfigure logger to use get_server_logger now that settings (and CLM_URL) are available ---
+from app.logger import get_server_logger # Import from the new logger module
+logger = get_server_logger(name="app.config", service_name_for_clm="server") # Ensure service name is "server"
+# The get_server_logger will itself try to access settings.CLM_URL.
+# If it fails (e.g., CLM_URL not set), it will print a warning and CLM handler won't be added.
+
 # 4. Log loaded/missing required variables (similar to original behavior for info)
+# These logs will now go through the potentially CLM-enabled logger
 logger.info("Verifying loaded configuration settings:")
 # Define which variables are truly required (no default, not Optional)
 _required_field_names = {
