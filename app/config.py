@@ -22,10 +22,17 @@ class Settings(BaseSettings):
     LIVEKIT_URL: str
     OPENAI_API_KEY: str
     LIVEKIT_REGION: Optional[str] = None
-    LIVEKIT_ROOM_PREFIX: str = "betsy-classroom" # Default room prefix
-    PORT: int = 8000
-    HOST: str = "0.0.0.0"
-    CLM_URL: str = "http://localhost:9999" # URL for the Custom Log Manager service
+    LIVEKIT_ROOM_PREFIX: str
+    PORT: int
+    HOST: str
+    CLM_URL: str
+    AGENT_DEFAULT_VOICE: str
+    AGENT_DEFAULT_TEMPERATURE: float
+    AGENT_DEFAULT_MAX_RESPONSE_TOKENS: int
+    AGENT_DEFAULT_MODALITIES: str
+    AGENT_OPENAI_VAD_THRESHOLD: float
+    AGENT_OPENAI_VAD_SILENCE_DURATION_MS: int
+    AGENT_OPENAI_VAD_PREFIX_PADDING_MS: int
 
     model_config = SettingsConfigDict(
         env_file_encoding='utf-8',

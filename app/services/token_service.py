@@ -3,6 +3,7 @@ import secrets
 import string
 import re
 import uuid
+import json
 from datetime import timedelta
 from typing import Optional, Dict, Any
 
@@ -88,13 +89,34 @@ def create_token(
         # We will return it for the client to use if needed.
     )
 
+    # Prepare metadata for the agent
+    # Instructions are handled by the agent's initialize_session method for now.
+    # OpenAI API key for the agent's LLM calls is sourced from server settings.
+    metadata_payload = {
+        "openai_api_key": settings.OPENAI_API_KEY, # Agent will use this for its OpenAI calls
+        "voice": settings.AGENT_DEFAULT_VOICE,
+        "temperature": settings.AGENT_DEFAULT_TEMPERATURE,
+        "max_output_tokens": settings.AGENT_DEFAULT_MAX_RESPONSE_TOKENS,
+        "modalities": settings.AGENT_DEFAULT_MODALITIES, # Agent will parse this string
+        "turn_detection": json.dumps({
+            "threshold": settings.AGENT_OPENAI_VAD_THRESHOLD,
+            "silence_duration_ms": settings.AGENT_OPENAI_VAD_SILENCE_DURATION_MS,
+            "prefix_padding_ms": settings.AGENT_OPENAI_VAD_PREFIX_PADDING_MS,
+        }),
+        # Ensure other necessary fields expected by the agent's parse_session_config are here
+        # For example, if the agent expects 'instructions' in metadata, it should be added.
+        # For now, instructions are set directly on the agent instance.
+    }
+    logger.debug(f"Token metadata payload for agent: {metadata_payload}")
+
     # Create AccessToken using the builder pattern from livekit.api
-    access_token = api.AccessToken(api_key, api_secret) \
+    access_token_builder = api.AccessToken(api_key, api_secret) \
         .with_identity(identity) \
         .with_ttl(timedelta(seconds=ttl_seconds)) \
-        .with_grants(video_grants)
+        .with_grants(video_grants) \
+        .with_metadata(json.dumps(metadata_payload))
 
-    jwt = access_token.to_jwt()
+    jwt = access_token_builder.to_jwt()
 
     return {
         "token": jwt,

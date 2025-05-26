@@ -1,22 +1,98 @@
 import asyncio
-import types
-from typing import Optional
+import json
+from dataclasses import dataclass, field
+from typing import Optional, List, Dict, Any
 
+import livekit.rtc
 from livekit.agents import (
-    Agent,
-    AgentSession,
     JobContext,
     Worker,
     WorkerOptions,
     JobExecutorType,
-    stt,
+    AutoSubscribe,
+    llm,
 )
-from livekit.agents.voice.room_io import RoomInputOptions
-from livekit.agents.types import NOT_GIVEN
-from livekit.plugins import openai, silero
+from livekit.agents.multimodal import MultimodalAgent
+from livekit.plugins import openai
 
-# New imports for config and logging
 from app.config import logger, settings
+
+# Define a dataclass to hold parsed agent configuration from metadata
+@dataclass
+class _AgentConfig:
+    openai_api_key: str
+    voice: openai.realtime.api_proto.Voice
+    temperature: float
+    max_response_output_tokens: int | str
+    modalities: List[openai.realtime.api_proto.Modality]
+    turn_detection: openai.realtime.ServerVadOptions
+
+    # Helper to convert string modalities from metadata to enum list
+    @staticmethod
+    def _modalities_from_metadata_str(modalities_str: str) -> List[openai.realtime.api_proto.Modality]:
+        modalities_map = {
+            "text_and_audio": [
+                openai.realtime.api_proto.Modality.MODALITY_TEXT,
+                openai.realtime.api_proto.Modality.MODALITY_AUDIO,
+            ],
+            "text_only": [openai.realtime.api_proto.Modality.MODALITY_TEXT],
+            "audio_only": [openai.realtime.api_proto.Modality.MODALITY_AUDIO],
+        }
+        selected_modalities = modalities_map.get(modalities_str.lower())
+        if selected_modalities is None:
+            logger.warning(f"Unknown modalities string '{modalities_str}', defaulting to text_and_audio.")
+            return modalities_map["text_and_audio"]
+        return selected_modalities
+
+    # Helper to parse turn_detection from metadata
+    @staticmethod
+    def _turn_detection_from_metadata_str(turn_detection_str: str) -> openai.realtime.ServerVadOptions:
+        try:
+            params = json.loads(turn_detection_str)
+            return openai.realtime.ServerVadOptions(
+                threshold=float(params.get("threshold", 0.5)),
+                silence_duration_ms=int(params.get("silence_duration_ms", 300)),
+                prefix_padding_ms=int(params.get("prefix_padding_ms", 200)),
+            )
+        except Exception as e:
+            logger.error(f"Failed to parse turn_detection from metadata: {e}. Using default VAD options.", exc_info=True)
+            return openai.realtime.DEFAULT_SERVER_VAD_OPTIONS
+
+
+def _parse_agent_config_from_metadata(metadata_str: str) -> Optional[_AgentConfig]:
+    """
+    Parses the agent configuration from the JSON string in participant metadata.
+    """
+    try:
+        data = json.loads(metadata_str)
+        logger.info(f"Agent: Parsing metadata for configuration: {data}")
+
+        # Validate required fields from metadata
+        required_keys = ["openai_api_key", "voice", "temperature", "max_output_tokens", "modalities", "turn_detection"]
+        for key in required_keys:
+            if key not in data:
+                logger.error(f"Agent: Missing required key '{key}' in metadata.")
+                return None
+
+        voice_str = data.get("voice", "alloy").lower()
+        # Map string to Voice enum, default to ALLOY if unknown
+        voice_enum = getattr(openai.realtime.api_proto.Voice, voice_str.upper(), openai.realtime.api_proto.Voice.ALLOY)
+        if voice_enum != getattr(openai.realtime.api_proto.Voice, voice_str.upper(), None): # Check if it was a valid voice
+             logger.warning(f"Agent: Unknown voice '{voice_str}' in metadata, defaulting to ALLOY.")
+
+
+        return _AgentConfig(
+            openai_api_key=str(data["openai_api_key"]),
+            voice=voice_enum,
+            temperature=float(data["temperature"]),
+            max_response_output_tokens=str(data["max_output_tokens"]) if str(data["max_output_tokens"]).lower() == "inf" else int(data["max_output_tokens"]),
+            modalities=_AgentConfig._modalities_from_metadata_str(str(data["modalities"])),
+            turn_detection=_AgentConfig._turn_detection_from_metadata_str(str(data["turn_detection"])),
+        )
+    except Exception as e:
+        logger.error(f"Agent: Failed to parse agent configuration from metadata: {e}", exc_info=True)
+        return None
+
 
 class BetsyTeacher:
     def __init__(self):
@@ -24,158 +100,134 @@ class BetsyTeacher:
         self.active: bool = False
         self.room_name: Optional[str] = None
         self._worker_task: Optional[asyncio.Task] = None
+        self._agent_instance: Optional[MultimodalAgent] = None
+        self._realtime_model_instance: Optional[openai.realtime.RealtimeModel] = None
 
     async def _agent_entrypoint_method(self, ctx: JobContext):
-        agent = None
-        session = None
-        session_task = None
+        logger.info(f"Betsy Agent: Entrypoint started for room '{self.room_name}'.")
+        human_participant: Optional[livekit.rtc.RemoteParticipant] = None
+        parsed_agent_config: Optional[_AgentConfig] = None
+
         try:
-            logger.debug(f"Agent Worker (Thread): Initializing for room '{self.room_name}' with instructions: '{self.agent_instructions[:50] if self.agent_instructions else 'N/A'}...'")
-            
-            logger.debug(f"Agent Worker (Thread): Initializing LiveKit components for room '{self.room_name}'")
-            
-            agent = Agent(instructions=self.agent_instructions)
-            
-            vad_instance = None
-            try:
-                vad_opts_obj = types.SimpleNamespace(sample_rate=16000)
-                vad_instance = silero.VAD(session=ctx.room, opts=vad_opts_obj)
-                logger.debug(f"Agent Worker (Thread): Silero VAD instantiated with ctx.room and opts: {vad_opts_obj}")
-            except Exception as e_vad:
-                logger.error(f"Agent Worker (Thread): Failed to instantiate silero.VAD: {e_vad}", exc_info=True)
+            await ctx.connect(auto_subscribe=AutoSubscribe.AUDIO_ONLY)
+            logger.info(f"Betsy Agent: Connected to room '{ctx.room.name}'. Waiting for human participant.")
 
-            openai_stt = openai.STT(api_key=settings.OPENAI_API_KEY)
-            if vad_instance:
-                adapted_stt = stt.StreamAdapter(stt=openai_stt, vad=vad_instance)
-                logger.debug("Agent Worker (Thread): OpenAI STT wrapped with StreamAdapter using Silero VAD.")
-            else:
-                adapted_stt = openai_stt
-                logger.warning("Agent Worker (Thread): Silero VAD instantiation failed. Passing raw OpenAI STT to AgentSession. Expecting STT streaming error.")
+            # Wait for the human participant and their metadata
+            participant_search_timeout = 30.0  # seconds
+            start_time = asyncio.get_event_loop().time()
+            while (asyncio.get_event_loop().time() - start_time) < participant_search_timeout:
+                if not ctx.room.isconnected:
+                    logger.warning("Betsy Agent: Room disconnected during participant search.")
+                    return
 
-            session = AgentSession(
-                stt=adapted_stt,
-                llm=openai.LLM(model="gpt-4o", api_key=settings.OPENAI_API_KEY),
-                tts=openai.TTS(voice="alloy", api_key=settings.OPENAI_API_KEY),
-                vad=vad_instance,
-            )
-            logger.debug(f"Agent Worker (Thread): AgentSession instantiated (VAD {'provided' if vad_instance else 'not provided'}).")
-
-            logger.info(f"Agent Worker (Thread): Connecting to room: {self.room_name}")
-            await ctx.connect(auto_subscribe=True) 
-            logger.info(f"Agent Worker (Thread): Connected to room: {ctx.room.name}")
-            logger.info(f"Agent Worker (Thread): Agent's local participant identity: {ctx.room.local_participant.identity}")
-
-            target_participant_identity: Optional[str] = None
-            if ctx.room.remote_participants:
-                logger.debug(f"Agent Worker (Thread): Searching for target participant among {len(ctx.room.remote_participants)} remote participant(s).")
                 for p_sid, p_info in ctx.room.remote_participants.items():
-                    logger.debug(f"Agent Worker (Thread): Checking remote participant: SID='{p_sid}', Identity='{p_info.identity}', Kind='{p_info.kind}'")
-                    # Assuming the user is not another agent and not the local participant itself
-                    if p_info.identity != ctx.room.local_participant.identity:
-                        target_participant_identity = p_info.identity
-                        logger.info(f"Agent Worker (Thread): Found target remote participant: SID='{p_sid}', Identity='{target_participant_identity}'")
-                        break # Take the first suitable one
-            
-            if not target_participant_identity:
-                logger.warning("Agent Worker (Thread): Could not find a suitable remote participant to target. RoomIO will use default participant selection logic.")
-
-            # Explicitly set RoomInputOptions to target the found participant
-            # If no specific participant is found, participant_identity will be NOT_GIVEN,
-            # allowing RoomIO to use its default participant selection.
-            input_opts = RoomInputOptions(
-                participant_identity=target_participant_identity if target_participant_identity else NOT_GIVEN,
-                audio_enabled=True, # Ensure audio input is enabled
-                # text_enabled and video_enabled will use their defaults from RoomInputOptions definition
-            )
-            
-            logger.info(f"Agent Worker (Thread): Overriding session start log with RoomInputOptions targeting participant: '{input_opts.participant_identity if input_opts.participant_identity is not NOT_GIVEN else 'SDK Default'}'")
-            
-            logger.info(f"Agent Worker (Thread): Starting agent session task in room: {self.room_name}")
-            session_task = asyncio.create_task(
-                session.start(
-                    agent=agent, 
-                    room=ctx.room,
-                    room_input_options=input_opts # Pass the configured input options
-                ), 
-                name=f"AgentSession-{self.room_name}"
-            )
-
-            await asyncio.sleep(1.0) 
-            
-            if ctx.room.isconnected and hasattr(session, '_started') and session._started:
-                try:
-                    logger.debug("Agent Worker (Thread): Attempting to say a welcome message.")
-                    await session.generate_reply(instructions="Dis bonjour et présente-toi brièvement.")
-                    logger.debug("Agent Worker (Thread): Welcome message task created/finished.")
-                except RuntimeError as e_runtime: 
-                    logger.error(f"Agent Worker (Thread): RuntimeError trying to say welcome message (session started: {session._started}): {e_runtime}", exc_info=True)
-                except Exception as e_say:
-                    logger.error(f"Agent Worker (Thread): Generic error trying to say welcome message: {e_say}", exc_info=True)
-            elif hasattr(session, '_started') and not session._started :
-                 logger.warning(f"Agent Worker (Thread): Session not in a 'started' state (session._started = {session._started}), cannot say welcome message.")
-            elif not ctx.room.isconnected:
-                 logger.warning("Agent Worker (Thread): Room disconnected, cannot say welcome message.")
-
-            logger.debug(f"Agent Worker (Thread): Entering keep-alive loop for room {self.room_name}.")
-            while ctx.room.isconnected:
-                if session_task and session_task.done():
-                    logger.info(f"Agent Worker (Thread): Session task for {self.room_name} completed.")
-                    try:
-                        session_task.result() 
-                    except asyncio.CancelledError:
-                        logger.info(f"Agent Worker (Thread): Session task for {self.room_name} was cancelled.")
-                    except Exception as e_session:
-                        logger.error(f"Agent Worker (Thread): Exception from session_task: {e_session}", exc_info=True)
-                    break 
+                    # Assuming the human participant is not the agent itself
+                    if p_info.identity != ctx.room.local_participant.identity and p_info.metadata:
+                        remote_p = ctx.room.remote_participants.get(p_sid)
+                        if remote_p and remote_p.metadata:
+                            human_participant = remote_p
+                            logger.info(f"Betsy Agent: Found human participant '{human_participant.identity}' with metadata.")
+                            parsed_agent_config = _parse_agent_config_from_metadata(human_participant.metadata)
+                            break
+                if parsed_agent_config:
+                    break
                 await asyncio.sleep(0.5)
+
+            if not human_participant or not parsed_agent_config:
+                logger.error("Betsy Agent: Could not find human participant with valid metadata. Exiting.")
+                return
+
+            if not self.agent_instructions:
+                logger.error("Betsy Agent: Agent instructions not initialized. Exiting.")
+                return
+
+            logger.info(f"Betsy Agent: Initializing RealtimeModel with config: {parsed_agent_config} and instructions.")
+
+            self._realtime_model_instance = openai.realtime.RealtimeModel(
+                api_key=parsed_agent_config.openai_api_key,
+                instructions=self.agent_instructions,
+                voice=parsed_agent_config.voice,
+                temperature=parsed_agent_config.temperature,
+                max_response_output_tokens=parsed_agent_config.max_response_output_tokens,
+                modalities=parsed_agent_config.modalities,
+                turn_detection=parsed_agent_config.turn_detection,
+            )
+            logger.info("Betsy Agent: RealtimeModel initialized.")
+
+            self._agent_instance = MultimodalAgent(model=self._realtime_model_instance)
+            logger.info("Betsy Agent: MultimodalAgent initialized. Starting agent in room.")
             
-            if not ctx.room.isconnected:
-                logger.info(f"Agent Worker (Thread): Room {self.room_name} disconnected, stopping entrypoint.")
-                if session_task and not session_task.done():
-                    session_task.cancel()
-                    try:
-                        await session_task
-                    except asyncio.CancelledError:
-                        logger.info(f"Agent Worker (Thread): Session task for {self.room_name} cancelled during room disconnect.")
+            # Start the agent (this will handle STT, LLM, TTS internally)
+            self._agent_instance.start(ctx.room)
+            
+            # Optionally, send an initial message to the LLM if audio modality is present
+            # This helps in initiating the conversation from the agent's side.
+            if self._realtime_model_instance.sessions and openai.realtime.api_proto.Modality.MODALITY_AUDIO in parsed_agent_config.modalities:
+                session = self._realtime_model_instance.sessions[0]
+                logger.info("Betsy Agent: Sending initial greeting/prompt to LLM.")
+                session.conversation.item.create(
+                    llm.ChatMessage(
+                        role=llm.ChatRole.USER, # Or SYSTEM, depending on desired effect
+                        content="Please greet the user and introduce yourself as Betsy, consistent with your instructions."
+                    )
+                )
+                session.response.create() # Trigger the LLM response
 
-            logger.info(f"Agent Worker (Thread): Agent session processing finished for room: {self.room_name}")
+            logger.info("Betsy Agent: MultimodalAgent started and running.")
+            # The agent will run until the job is cancelled or the room is closed.
+            # We can await a join or a specific event if needed for graceful shutdown.
+            # For now, allow the worker's run loop to manage its lifetime.
+            # Example: await self._agent_instance.join() # if join method exists and is appropriate
+            
+            # Keep the entrypoint alive while the agent is active
+            while ctx.room.isconnected and self.active: # self.active is managed by connect_to_room/stop
+                await asyncio.sleep(1)
+            logger.info("Betsy Agent: Exiting entrypoint loop (room disconnected or agent stopped).")
 
+        except asyncio.CancelledError:
+            logger.info(f"Betsy Agent: Entrypoint for room '{self.room_name}' was cancelled.")
         except Exception as e:
-            logger.error(f"Agent Worker (Thread): Critical error in entrypoint for room {self.room_name}: {e}", exc_info=True)
-            raise
+            logger.error(f"Betsy Agent: Error in entrypoint for room '{self.room_name}': {e}", exc_info=True)
         finally:
-            logger.debug(f"Agent Worker (Thread): Exiting entrypoint for room {self.room_name}.")
-            if session:
+            logger.info(f"Betsy Agent: Cleaning up entrypoint for room '{self.room_name}'.")
+            if self._agent_instance:
                 try:
-                    if hasattr(session, '_started') and session._started and (not hasattr(session, '_closing_task') or (hasattr(session, '_closing_task') and session._closing_task is None)):
-                         logger.debug(f"Agent Worker (Thread): Explicitly closing session for {self.room_name} in finally block.")
-                         await session.aclose()
-                         logger.debug(f"Agent Worker (Thread): Session for room {self.room_name} closed in finally block.")
-                    elif hasattr(session, '_started') and not session._started:
-                         logger.debug(f"Agent Worker (Thread): Session for room {self.room_name} was not started, no aclose needed in finally.")
-                    else:
-                         logger.debug(f"Agent Worker (Thread): Session for room {self.room_name} already closing or closed, no aclose needed in finally.")
-                except Exception as close_e:
-                    logger.error(f"Agent Worker (Thread): Error closing session for room {self.room_name} in finally: {close_e}", exc_info=True)
+                    # Gracefully close the agent and its resources
+                    # The specific close method might depend on the MultimodalAgent implementation
+                    # For now, we assume it cleans up its model upon its own closure or job cancellation.
+                    # If an explicit close is needed for MultimodalAgent or RealtimeModel, call it here.
+                    # e.g., await self._agent_instance.aclose() or await self._realtime_model_instance.aclose()
+                    logger.info("Betsy Agent: MultimodalAgent cleanup (if any specific method is available).")
+                except Exception as e_close:
+                    logger.error(f"Betsy Agent: Error during agent cleanup: {e_close}", exc_info=True)
+            
+            if ctx.room and ctx.room.isconnected:
+                logger.info(f"Betsy Agent: Disconnecting from room '{ctx.room.name}' in finally block.")
+                await ctx.room.disconnect()
+            logger.info(f"Betsy Agent: Entrypoint for room '{self.room_name}' finished cleanup.")
+            self._agent_instance = None
+            self._realtime_model_instance = None
+
 
     async def initialize_session(self, system_prompt: str) -> None:
+        # Ensure instructions are not overly verbose for logging but store the full prompt.
+        log_prompt = system_prompt[:100] + "..." if len(system_prompt) > 100 else system_prompt
         full_instructions = f"You are Betsy! And you NEVER change your name! Your are Betsy: {system_prompt}"
-        logger.info(f"BetsyTeacher: Storing instructions: {full_instructions[:150]}...")
+        logger.info(f"BetsyTeacher: Storing agent instructions (preview: '{log_prompt}')")
         self.agent_instructions = full_instructions
 
     async def connect_to_room(self, room_name: str) -> bool:
         if not self.agent_instructions:
-            logger.warning("BetsyTeacher: Agent instructions not set. Call initialize_session first.")
+            logger.error("BetsyTeacher: Agent instructions not set. Call initialize_session first.")
             return False
         
         if self._worker_task and not self._worker_task.done():
-            logger.warning(f"BetsyTeacher: Worker task already active for room {self.room_name}. Stopping it first.")
+            logger.warning(f"BetsyTeacher: Worker task already active for room '{self.room_name}'. Stopping it first.")
             await self.stop()
 
         self.room_name = room_name
         
         try:
-            # Use settings object instead of os.getenv
             region = settings.LIVEKIT_REGION
             
             lk_url = settings.LIVEKIT_URL
@@ -183,74 +235,76 @@ class BetsyTeacher:
             lk_api_secret = settings.LIVEKIT_API_SECRET
 
             if not all([lk_url, lk_api_key, lk_api_secret]):
-                # This check might be redundant if Pydantic settings are correctly configured as required
-                logger.error("BetsyTeacher: LIVEKIT_URL, API_KEY, or API_SECRET not found in settings. Worker will fail.")
+                logger.error("BetsyTeacher: LIVEKIT_URL, API_KEY, or API_SECRET not found in settings. Worker cannot start.")
                 return False
 
-            logger.info(f"BetsyTeacher: Preparing LiveKit Worker (Thread) for room: {self.room_name} (region: {region or 'default'}) using URL: {lk_url[:20] if lk_url else 'N/A'}...")
+            logger.info(f"BetsyTeacher: Preparing LiveKit Worker for room: '{self.room_name}' (region: {region or 'default'})")
             
             options = WorkerOptions(
                 entrypoint_fnc=self._agent_entrypoint_method,
                 ws_url=lk_url,
                 api_key=lk_api_key,
                 api_secret=lk_api_secret,
-                job_executor_type=JobExecutorType.THREAD
+                job_executor_type=JobExecutorType.THREAD # Consider THREAD or PROCESS based on needs
             )
-            if region: 
-                options.region = region
+            # region is typically handled by the ws_url for LiveKit Cloud or specific SDK configurations.
+            # If WorkerOptions has a direct region param and it's needed, set it:
+            # if region: options.region = region 
             
             worker = Worker(options)
             
-            logger.info(f"BetsyTeacher: Starting LiveKit Worker (Thread) task for room {self.room_name}.")
+            logger.info(f"BetsyTeacher: Starting LiveKit Worker task for room '{self.room_name}'.")
             self._worker_task = asyncio.create_task(worker.run(), name=f"BetsyWorker-{self.room_name}")
             
-            await asyncio.sleep(2) 
+            # Give a moment for the worker to potentially start and connect
+            await asyncio.sleep(1) 
 
-            if self._worker_task.done():
+            if self._worker_task.done(): 
                 try:
                     exc = self._worker_task.exception()
                     if exc:
-                        logger.error(f"BetsyTeacher: Worker (Thread) task for {self.room_name} failed early: {exc}", exc_info=exc)
+                        logger.error(f"BetsyTeacher: Worker task for '{self.room_name}' failed early: {exc}", exc_info=exc)
                         self.active = False
                         return False
-                    else:
-                        logger.info(f"BetsyTeacher: Worker (Thread) task for {self.room_name} completed very quickly (may be an issue).")
-                        self.active = False
-                        return False
+                    else: 
+                        logger.info(f"BetsyTeacher: Worker task for '{self.room_name}' completed very quickly.")
+                        # This might be okay if the entrypoint is short-lived by design, but our agent should be long-running.
                 except asyncio.CancelledError:
-                    logger.info(f"BetsyTeacher: Worker (Thread) task for {self.room_name} was cancelled during initial check.")
+                    logger.info(f"BetsyTeacher: Worker task for '{self.room_name}' was cancelled during initial check.")
                     self.active = False
                     return False
             
-            logger.info(f"BetsyTeacher: LiveKit Worker (Thread) for room {self.room_name} presumed started (task is running).")
-            self.active = True
+            logger.info(f"BetsyTeacher: LiveKit Worker for room '{self.room_name}' task is running.")
+            self.active = True 
             return True
 
         except Exception as e:
-            logger.error(f"BetsyTeacher: Error setting up or starting worker (Thread) for {self.room_name}: {e}", exc_info=True)
+            logger.error(f"BetsyTeacher: Error setting up or starting worker for '{self.room_name}': {e}", exc_info=True)
             self.active = False
             if self._worker_task and not self._worker_task.done():
                 self._worker_task.cancel()
             return False
         
     async def stop(self) -> None:
-        current_room_for_log = self.room_name or "N/A"
-        logger.info(f"BetsyTeacher: Stop called for room {current_room_for_log}")
+        current_room_name = self.room_name or "N/A"
+        logger.info(f"BetsyTeacher: Stop called for room '{current_room_name}'.")
         
+        self.active = False # Signal the entrypoint loop to exit
         task_to_stop = self._worker_task
         self._worker_task = None 
-        self.active = False 
 
         if task_to_stop and not task_to_stop.done():
-            logger.info(f"BetsyTeacher: Cancelling worker (Thread) task for room {current_room_for_log}")
+            logger.info(f"BetsyTeacher: Cancelling worker task for room '{current_room_name}'.")
             task_to_stop.cancel()
             try:
-                await task_to_stop
+                await asyncio.wait_for(task_to_stop, timeout=5.0) # Wait for cancellation/completion
             except asyncio.CancelledError:
-                logger.info(f"BetsyTeacher: Worker (Thread) task for room {current_room_for_log} successfully cancelled.")
+                logger.info(f"BetsyTeacher: Worker task for room '{current_room_name}' successfully cancelled.")
+            except asyncio.TimeoutError:
+                logger.warning(f"BetsyTeacher: Timeout waiting for worker task of room '{current_room_name}' to cancel.")
             except Exception as e:
-                logger.error(f"BetsyTeacher: Error awaiting cancelled worker (Thread) task for {current_room_for_log}: {e}", exc_info=True)
+                logger.error(f"BetsyTeacher: Error awaiting cancelled worker task for '{current_room_name}': {e}", exc_info=True)
         else:
-            logger.info(f"BetsyTeacher: No active worker (Thread) task found for room {current_room_for_log} or task already done.")
+            logger.info(f"BetsyTeacher: No active worker task found for room '{current_room_name}' or task already done.")
         
-        logger.info(f"BetsyTeacher: Stop process completed for room {current_room_for_log}.")
+        logger.info(f"BetsyTeacher: Stop process completed for room '{current_room_name}'.")
