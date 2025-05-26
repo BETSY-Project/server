@@ -3,6 +3,7 @@ import requests
 import json
 import os
 import traceback
+from typing import Dict, Any
 
 # Define custom SUCCESS log level
 SUCCESS_LEVEL = 25  # Between INFO (20) and WARNING (30)
@@ -73,7 +74,7 @@ class CustomLogManagerHandler(logging.Handler):
         formatted_for_console_fallback = self.format(record)
 
         try:
-            log_entry = {
+            log_entry: Dict[str, Any] = {
                 "service": self.service_name,
                 "level": log_level_str,
                 "message": actual_message,
@@ -93,7 +94,7 @@ class CustomLogManagerHandler(logging.Handler):
 
 
 def get_server_logger(name: str = 'betsy-server',
-                      level: int = logging.INFO,
+                      level: int = logging.DEBUG,
                       service_name_for_clm: str = "server"):
     
     # get_server_logger is now responsible for obtaining CLM_URL via settings.
