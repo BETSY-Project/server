@@ -11,6 +11,8 @@ from livekit.agents import (
     JobExecutorType,
     stt,
 )
+from livekit.agents.voice.room_io import RoomInputOptions
+from livekit.agents.types import NOT_GIVEN
 from livekit.plugins import openai, silero
 
 # New imports for config and logging
@@ -61,9 +63,42 @@ class BetsyTeacher:
             logger.info(f"Agent Worker (Thread): Connecting to room: {self.room_name}")
             await ctx.connect(auto_subscribe=True) 
             logger.info(f"Agent Worker (Thread): Connected to room: {ctx.room.name}")
+            logger.info(f"Agent Worker (Thread): Agent's local participant identity: {ctx.room.local_participant.identity}")
+
+            target_participant_identity: Optional[str] = None
+            if ctx.room.remote_participants:
+                logger.debug(f"Agent Worker (Thread): Searching for target participant among {len(ctx.room.remote_participants)} remote participant(s).")
+                for p_sid, p_info in ctx.room.remote_participants.items():
+                    logger.debug(f"Agent Worker (Thread): Checking remote participant: SID='{p_sid}', Identity='{p_info.identity}', Kind='{p_info.kind}'")
+                    # Assuming the user is not another agent and not the local participant itself
+                    if p_info.identity != ctx.room.local_participant.identity:
+                        target_participant_identity = p_info.identity
+                        logger.info(f"Agent Worker (Thread): Found target remote participant: SID='{p_sid}', Identity='{target_participant_identity}'")
+                        break # Take the first suitable one
+            
+            if not target_participant_identity:
+                logger.warning("Agent Worker (Thread): Could not find a suitable remote participant to target. RoomIO will use default participant selection logic.")
+
+            # Explicitly set RoomInputOptions to target the found participant
+            # If no specific participant is found, participant_identity will be NOT_GIVEN,
+            # allowing RoomIO to use its default participant selection.
+            input_opts = RoomInputOptions(
+                participant_identity=target_participant_identity if target_participant_identity else NOT_GIVEN,
+                audio_enabled=True, # Ensure audio input is enabled
+                # text_enabled and video_enabled will use their defaults from RoomInputOptions definition
+            )
+            
+            logger.info(f"Agent Worker (Thread): Overriding session start log with RoomInputOptions targeting participant: '{input_opts.participant_identity if input_opts.participant_identity is not NOT_GIVEN else 'SDK Default'}'")
             
             logger.info(f"Agent Worker (Thread): Starting agent session task in room: {self.room_name}")
-            session_task = asyncio.create_task(session.start(agent=agent, room=ctx.room), name=f"AgentSession-{self.room_name}")
+            session_task = asyncio.create_task(
+                session.start(
+                    agent=agent, 
+                    room=ctx.room,
+                    room_input_options=input_opts # Pass the configured input options
+                ), 
+                name=f"AgentSession-{self.room_name}"
+            )
 
             await asyncio.sleep(1.0) 
             
