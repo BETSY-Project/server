@@ -52,16 +52,15 @@ class LiveKitTokenResponse(BaseModel):
     livekit_url: str
     room_name: str
     identity: str
-    region: Optional[str] = None
 
 @app.post("/api/livekit-token", response_model=LiveKitTokenResponse)
-async def livekit_token_endpoint(region: Optional[str] = None):
+async def livekit_token_endpoint():
     """
     Generates a LiveKit token, a unique room name, and a unique identity.
     """
     try:
-        logger.info(f"Requesting LiveKit token, region: {region}")
-        token_data = create_livekit_token(region=region)
+        logger.info(f"Requesting LiveKit token")
+        token_data = create_livekit_token()
         logger.info(f"Token generated for room: {token_data['room_name']}, identity: {token_data['identity']}")
         return LiveKitTokenResponse(**token_data)
     except ValueError as ve:

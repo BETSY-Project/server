@@ -1,9 +1,9 @@
 # LiveKit related
-livekit>=0.18.0                     # Core SDK
-livekit-Protocol                    # Protocol
-livekit-agents>=0.11.0              # Agents framework
-livekit-plugins-openai>=0.10.5      # OpenAI plugin
-livekit-api~=1.0                    # For room administration (token service)
+livekit~=1.0
+livekit-protocol~=1.0
+livekit-agents[openai,turn-detector]~=1.0
+livekit-plugins-openai~=1.0
+livekit-api~=1.0  # For room administration (token service)
 
 # Other dependencies
 python-dotenv~=1.0
@@ -17,9 +17,4 @@ requests~=2.0
 ipython>=8.0.0
 black>=24.0.0
 isort>=5.12.0
-ruff>=0.1.0 # Linter and formatter
-
-livekit 
-livekit-protocol
-livekit-agents
-livekit-plugins-openai
+ruff>=0.1.0  # Linter and formatter

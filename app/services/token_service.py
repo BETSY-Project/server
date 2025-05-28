@@ -1,4 +1,3 @@
-# server/app/services/token_service.py
 import secrets
 import string
 import re
@@ -48,18 +47,16 @@ def generate_room_name() -> str:
     return f"{clean_prefix}-{random_id}"
 
 def create_token(
-    region: Optional[str] = None,
     ttl_seconds: int = 3600
 ) -> Dict[str, Any]:
     """
     Generates a LiveKit access token, a unique room name, and a unique identity.
 
     Args:
-        region: Optional region for LiveKit Cloud.
         ttl_seconds: Token time-to-live in seconds.
 
     Returns:
-        A dictionary containing the JWT, LiveKit URL, room_name, identity, and region.
+        A dictionary containing the JWT, LiveKit URL, room_name, identity and more...
 
     Raises:
         ValueError: If LiveKit API key, secret, or URL is not configured.
@@ -84,9 +81,6 @@ def create_token(
         can_publish=True,
         can_publish_data=True,
         can_subscribe=True
-        # Note: 'region' is not a direct field in VideoGrants for livekit-api Python SDK.
-        # It's handled at the client connection level or via LiveKit Cloud project settings.
-        # We will return it for the client to use if needed.
     )
 
     # Prepare metadata for the agent
@@ -98,11 +92,6 @@ def create_token(
         "temperature": settings.AGENT_DEFAULT_TEMPERATURE,
         "max_output_tokens": settings.AGENT_DEFAULT_MAX_RESPONSE_TOKENS,
         "modalities": settings.AGENT_DEFAULT_MODALITIES, # Agent will parse this string
-        "turn_detection": json.dumps({
-            "threshold": settings.AGENT_OPENAI_VAD_THRESHOLD,
-            "silence_duration_ms": settings.AGENT_OPENAI_VAD_SILENCE_DURATION_MS,
-            "prefix_padding_ms": settings.AGENT_OPENAI_VAD_PREFIX_PADDING_MS,
-        }),
         # Ensure other necessary fields expected by the agent's parse_session_config are here
         # For example, if the agent expects 'instructions' in metadata, it should be added.
         # For now, instructions are set directly on the agent instance.
@@ -122,6 +111,5 @@ def create_token(
         "token": jwt,
         "livekit_url": livekit_url,
         "room_name": room_name,
-        "identity": identity,
-        "region": region
+        "identity": identity
     }
