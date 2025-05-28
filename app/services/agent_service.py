@@ -13,7 +13,7 @@ based on participant metadata.
 import asyncio
 import json
 from enum import Enum
-from typing import List, Optional, Literal
+from typing import Optional, Literal
 from pydantic import BaseModel
 
 import inspect
