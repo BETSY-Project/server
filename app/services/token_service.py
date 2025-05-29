@@ -4,7 +4,7 @@ import re
 import uuid
 import json
 from datetime import timedelta
-from typing import Optional, Dict, Any
+from typing import Dict, Any
 
 from livekit import api
 from app.config import settings, logger as app_config_logger
