@@ -34,7 +34,6 @@ class ServerLogger(logging.Logger):
 # It's crucial this line is executed early in the module's import lifecycle.
 logging.setLoggerClass(ServerLogger)
 
-
 class CustomLogManagerHandler(logging.Handler):
     """
     A custom logging handler that sends log records to the Custom Log Manager (CLM) service.
@@ -91,7 +90,6 @@ class CustomLogManagerHandler(logging.Handler):
             # Fallback to console
             print(f"Unexpected error in CustomLogManagerHandler.emit for service '{self.service_name}': {e}")
             print(f"Original log ({self.service_name} - {log_level_str} - from {record.name}): {formatted_for_console_fallback}")
-
 
 def get_server_logger(name: str = 'betsy-server',
                       level: int = logging.DEBUG,

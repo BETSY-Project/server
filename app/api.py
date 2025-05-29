@@ -4,7 +4,6 @@ from pydantic import BaseModel, Field
 from typing import Optional
 from datetime import datetime
 
-# Imports from original api.py that are still needed for FastAPI routes
 from livekit.protocol.room import DeleteRoomRequest
 from livekit import api as livekit_api # For stop_session_endpoint
 
@@ -35,7 +34,6 @@ app.add_middleware(
 
 teacher = BetsyTeacher() # Instantiate the teacher from agent_service
 
-# Pydantic models (kept here for now as per instructions)
 class StartSessionRequest(BaseModel):
     instructions: str = Field(..., description="System prompt instructions for the teacher")
     room_name: str = Field(..., description="LiveKit room name to join")
@@ -46,7 +44,6 @@ class SessionResponse(BaseModel):
     session_id: Optional[str] = None
     room_name: Optional[str] = None
 
-# Pydantic model for the new token endpoint response
 class LiveKitTokenResponse(BaseModel):
     token: str
     livekit_url: str

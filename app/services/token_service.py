@@ -87,7 +87,7 @@ def create_token(
     # Instructions are handled by the agent's initialize_session method for now.
     # OpenAI API key for the agent's LLM calls is sourced from server settings.
     metadata_payload = {
-        "openai_api_key": settings.OPENAI_API_KEY, # Agent will use this for its OpenAI calls
+        "openai_api_key": settings.OPENAI_API_KEY,
         "voice": settings.AGENT_DEFAULT_VOICE,
         "temperature": settings.AGENT_DEFAULT_TEMPERATURE,
         "max_output_tokens": settings.AGENT_DEFAULT_MAX_RESPONSE_TOKENS,

@@ -131,7 +131,7 @@ class BetsyTeacher:
             await asyncio.sleep(0.5)  # let the worker start
             self.active = True
             return True
-        except Exception:  # noqa: BLE001
+        except Exception:
             logger.exception("Failed to start worker")
             self.active = False
             return False
@@ -143,7 +143,7 @@ class BetsyTeacher:
         if self._session:
             try:
                 await self._session.close()
-            except Exception:  # noqa: BLE001
+            except Exception:
                 logger.exception("Error closing AgentSession")
             self._session = None
 
