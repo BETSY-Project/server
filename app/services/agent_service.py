@@ -175,7 +175,7 @@ class BetsyTeacher:
         await ctx.connect(auto_subscribe=AutoSubscribe.AUDIO_ONLY)
 
         # Wait for a remote participant that has metadata
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
 
         # Future to signal when a suitable remote participant (one with metadata) connects.
         participant_future: asyncio.Future[rtc.RemoteParticipant] = loop.create_future()
